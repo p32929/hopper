@@ -294,6 +294,21 @@ test('two-step ZIP download: errors come back as messages, the link works once',
   assert.equal((await json('/api/zip-plan', { paths: [] })).status, 400);
 });
 
+test('ZIP follows symlinks to folders but never loops, and skips broken links', { skip: remote && 'needs a local server' }, async () => {
+  const dir = path.join(sandbox, 'links');
+  fs.mkdirSync(path.join(dir, 'real'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'real', 'in.txt'), 'inside');
+  fs.mkdirSync(path.join(dir, 'other'));
+  fs.writeFileSync(path.join(dir, 'other', 'o.txt'), 'other');
+  fs.symlinkSync(path.join(dir, 'other'), path.join(dir, 'real', 'shortcut')); // a link to another folder: included
+  fs.symlinkSync(path.join(dir, 'real'), path.join(dir, 'real', 'loop')); // a link back to its own folder: skipped
+  fs.symlinkSync(path.join(dir, 'nowhere'), path.join(dir, 'real', 'broken')); // points at nothing: skipped
+  const res = await fetch(`${base}/api/zip`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths: [path.join(dir, 'real')] }) });
+  assert.equal(res.status, 200);
+  const zip = readZip(Buffer.from(await res.arrayBuffer()));
+  assert.deepEqual(Object.keys(zip).sort(), ['real/', 'real/in.txt', 'real/shortcut/', 'real/shortcut/o.txt']);
+});
+
 test('creating nested folders in one go (empty folders in a folder upload)', async () => {
   const res = await json('/api/mkdir', { path: sandbox, name: 'x/y/z', parents: true });
   assert.equal(res.status, 200);

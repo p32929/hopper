@@ -392,26 +392,26 @@ const ZIP64_AT = TEST_ZIP64 ? 1000 : 0xf0000000; // a file this big gets ZIP64 h
 const Z32 = TEST_ZIP64 ? 3000 : 0xffffffff;
 const Z16 = TEST_ZIP64 ? 5 : 0xffff;
 
-/** Walk the chosen files and folders into a flat list of ZIP entries. Symlinked folders are skipped (they can loop). */
+/** Walk the chosen files and folders into a flat list of ZIP entries. Symlinks are followed, but never into a loop. */
 async function collectZipItems(paths) {
   const items = [];
   let bytes = 0;
-  async function walk(abs, rel, top) {
-    const link = top ? null : await fsp.lstat(abs);
+  async function walk(abs, rel, parents) {
     const st = await fsp.stat(abs);
     if (st.isDirectory()) {
-      if (link && link.isSymbolicLink()) return;
+      const real = await fsp.realpath(abs);
+      if (parents.includes(real)) return; // a link back up the tree: skip it, or we would never stop
       items.push({ abs, rel, dir: true, mtime: st.mtimeMs, size: 0 });
       for (const child of await fsp.readdir(abs)) {
         if (PART_RE.test(child)) continue;
-        await walk(path.join(abs, child), `${rel}/${child}`, false).catch(() => {}); // unreadable items are skipped
+        await walk(path.join(abs, child), `${rel}/${child}`, [...parents, real]).catch(() => {}); // unreadable or broken items are skipped
       }
     } else if (st.isFile()) {
       items.push({ abs, rel, dir: false, mtime: st.mtimeMs, size: st.size });
       bytes += st.size;
     }
   }
-  for (const p of paths) await walk(p, path.basename(p), true);
+  for (const p of paths) await walk(p, path.basename(p), []);
   return { items, bytes };
 }
 
