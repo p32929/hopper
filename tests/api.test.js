@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { readZip } = require('./zip');
+const crypto = require('node:crypto');
 
 let base = process.env.BASE_URL;
 let child;
@@ -186,6 +187,15 @@ test('download supports ranges, inline previews and unicode names', async () => 
   assert.equal((await fetch(`${base}/api/download?path=${encodeURIComponent(dir)}`)).status, 400, 'folder is not a file');
 });
 
+test('very long file names upload fine', async () => {
+  const dir = path.join(sandbox, 'long');
+  await json('/api/mkdir', { path: sandbox, name: 'long' });
+  const name = 'x'.repeat(250) + '.txt';
+  const res = await upload(dir, name, 'idlong001', 0, 3, 'abc');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await names(dir), [name]);
+});
+
 test('code and text files open inline; unknown files are checked by content', async () => {
   const dir = path.join(sandbox, 'inl');
   await json('/api/mkdir', { path: sandbox, name: 'inl' });
@@ -229,6 +239,67 @@ test('ZIP contains files and folders, with correct bytes', async () => {
   assert.ok(zip['big.txt'].equals(big));
   assert.equal(zip['sub/deep/two.txt'].toString(), 'two');
   assert.equal((await fetch(`${base}/api/zip`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"paths":[]}' })).status, 400);
+});
+
+test('ZIP64: big files, big offsets and many entries use the right headers', { skip: remote && 'needs a local server with FM_TEST_ZIP64' }, async () => {
+  const r2 = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-z64-'));
+  const proc = spawn(process.execPath, ['server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: '0', FM_ROOT: r2, FM_TEST_ZIP64: '1' } });
+  try {
+    const url = await new Promise((resolve, reject) => {
+      proc.stdout.on('data', (d) => { const m = /(http:\/\/localhost:\d+)/.exec(String(d)); if (m) resolve(m[1]); });
+      proc.on('exit', (c) => reject(new Error(`server exited ${c}`)));
+    });
+    // test limits: a file >= 1000 bytes is "big", offsets >= 3000 are "big", 5 entries are "many"
+    const big = Buffer.alloc(2500);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 13) % 251;
+    fs.mkdirSync(path.join(r2, 'z'));
+    fs.writeFileSync(path.join(r2, 'z', 'big.bin'), big);
+    fs.writeFileSync(path.join(r2, 'z', 'ünï.txt'), 'unicode name');
+    for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(r2, 'z', `small${i}.txt`), `small ${i}`);
+    fs.writeFileSync(path.join(r2, 'z', 'later.bin'), crypto.randomBytes(2000)); // starts after offset 3000? stored below
+    const res = await fetch(`${url}/api/zip`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths: [path.join(r2, 'z')] }) });
+    const buf = Buffer.from(await res.arrayBuffer());
+    const zip = readZip(buf);
+    assert.equal(zip.__info.zip64, true, 'ZIP64 records are present');
+    assert.ok(zip.__info.unicodeExtra >= 1, 'the non-ASCII name carries the Unicode path field');
+    assert.ok(zip['z/big.bin'].equals(big));
+    assert.equal(zip['z/ünï.txt'].toString(), 'unicode name');
+    for (let i = 0; i < 6; i++) assert.equal(zip[`z/small${i}.txt`].toString(), `small ${i}`);
+    assert.equal(Object.keys(zip).length, 10);
+    // an independent reader must agree
+    const tmp = path.join(r2, 'out.zip');
+    fs.writeFileSync(tmp, buf);
+    const py = require('node:child_process').spawnSync('python3', ['-c', 'import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);print(z.testzip() or "ok", len(z.namelist()))', tmp]);
+    assert.match(String(py.stdout), /^ok 10/, String(py.stderr));
+  } finally {
+    proc.kill();
+    fs.rmSync(r2, { recursive: true, force: true });
+  }
+});
+
+test('two-step ZIP download: errors come back as messages, the link works once', async () => {
+  const dir = path.join(sandbox, 'plan');
+  await json('/api/mkdir', { path: sandbox, name: 'plan' });
+  await upload(dir, 'a.txt', 'idplan001', 0, 1, 'a');
+  await json('/api/mkdir', { path: dir, name: 'sub' });
+  await upload(path.join(dir, 'sub'), 'b.txt', 'idplan002', 0, 1, 'b');
+  const plan = await (await json('/api/zip-plan', { paths: [dir] })).json();
+  assert.deepEqual([plan.files, plan.folders, plan.bytes], [2, 2, 2]);
+  const got = await fetch(`${base}/api/zip?token=${plan.token}`);
+  assert.equal(got.status, 200);
+  assert.match(got.headers.get('content-disposition'), /plan\.zip/);
+  assert.deepEqual(Object.keys(readZip(Buffer.from(await got.arrayBuffer()))).sort(), ['plan/', 'plan/a.txt', 'plan/sub/', 'plan/sub/b.txt']);
+  assert.equal((await fetch(`${base}/api/zip?token=${plan.token}`)).status, 410, 'one use only');
+  assert.equal((await json('/api/zip-plan', { paths: [path.join(sandbox, 'nope')] })).status, 404);
+  assert.equal((await json('/api/zip-plan', { paths: [] })).status, 400);
+});
+
+test('creating nested folders in one go (empty folders in a folder upload)', async () => {
+  const res = await json('/api/mkdir', { path: sandbox, name: 'x/y/z', parents: true });
+  assert.equal(res.status, 200);
+  assert.equal((await json('/api/mkdir', { path: sandbox, name: 'x/y/z', parents: true })).status, 200, 'already there is fine');
+  assert.equal((await json('/api/mkdir', { path: sandbox, name: '../escape', parents: true })).status, 400);
+  assert.deepEqual(await names(path.join(sandbox, 'x', 'y')), ['z']);
 });
 
 test('refuses to delete the root or home folder', async () => {

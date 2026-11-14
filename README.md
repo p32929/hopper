@@ -19,7 +19,7 @@ A clean, self-hosted web file manager with **zero dependencies**. Clone it, run 
 
 - **Fast, tidy interface**: list or grid view, sorting, filter box, breadcrumbs you can type into, light and dark theme
 - **Upload** files or whole folders by button or drag and drop. Big files go up in chunks and **resume** after a network hiccup. Live progress, speed, time left and cancel
-- **Download** a file, or select several files and folders and get them as **one ZIP** (built in pure Node, nothing to install)
+- **Download** a file, or select several files and folders (or a whole folder) and get them as **one ZIP**, built in pure Node with nothing to install. Works past 4 GB per file and 65,535 files (ZIP64), and already-compressed files such as videos and photos are not recompressed, so it is fast
 - **Create folders, rename and delete** (with a confirmation)
 - **Preview in the browser** instead of downloading: images, video, audio, PDF, and any text or code file (`.js`, `.py`, `.json`, `Dockerfile`, logs and more) with syntax colours, line numbers and next/previous with the arrow keys
 - **Keyboard shortcuts**: `/` filter, `Ctrl/Cmd+A` select all, `F2` rename, `Delete` delete, `Alt+↑` parent folder, `Ctrl/Cmd+L` type a path

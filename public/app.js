@@ -677,9 +677,24 @@
       a.remove();
       return;
     }
-    $('zip-paths').value = JSON.stringify(list.map((e) => join(S.path, e.name)));
-    $('zip-form').submit();
-    toast(`Preparing ZIP of ${plural(list.length, 'item')}…`);
+    zipDownload(list);
+  }
+
+  // Folders and several files come as one ZIP. We first ask the server to check them (so a problem is shown here
+  // as a message, never as a broken download), then follow its one-time link.
+  async function zipDownload(list) {
+    const paths = list.map((e) => join(S.path, e.name));
+    toast(list.length === 1 ? `Preparing “${list[0].name}”…` : `Preparing ZIP of ${plural(list.length, 'item')}…`);
+    try {
+      const plan = await api('/api/zip-plan', { json: { paths } });
+      const a = h('a', { href: `/api/zip?${qs({ token: plan.token })}` });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      toast(`Downloading ZIP: ${plural(plan.files, 'file')}, ${formatSize(plan.bytes)}`);
+    } catch (err) {
+      toast(`Cannot make the ZIP: ${err.message}`, 'error');
+    }
   }
 
   async function newFolder() {
@@ -730,7 +745,7 @@
   // Uploads (chunked, resumable, 2 at a time)
   // ------------------------------------------------------------------
   const CHUNK = store.get('chunk', 8 * 1024 * 1024); // 'fm.chunk' can be lowered for testing
-  const PARALLEL = 2;
+  const PARALLEL = 3;
   const jobs = [];
   let running = 0;
   let speed = 0;
@@ -748,6 +763,11 @@
       // new batch: drop old finished rows
       jobs.splice(0, jobs.length, ...jobs.filter((j) => j.state === 'error'));
     }
+    const folders = items.filter((i) => i.folder);
+    items = items.filter((i) => !i.folder);
+    const base = S.path;
+    for (const f of folders) api('/api/mkdir', { json: { path: base, name: f.folder, parents: true } }).then(() => { if (base === S.path) refresh(); }).catch(() => {});
+    if (!items.length) return;
     for (const { file, rel } of items) {
       jobs.push({ id: uid(), file, rel, dir: S.path, state: 'queued', loaded: 0, total: file.size, error: '', xhr: null, cancelled: false, finalName: rel });
     }
@@ -830,8 +850,8 @@
 
   function cancelJob(job) {
     job.cancelled = true;
-    if (job.state === 'queued') job.state = 'cancelled';
-    else if (job.state === 'uploading') job.xhr?.abort();
+    if (job.state === 'queued') { job.state = 'cancelled'; renderUploads(); return; } // nothing was sent yet
+    if (job.state === 'uploading') job.xhr?.abort();
     api(`/api/upload-cancel?${qs({ path: job.dir, name: job.rel, id: job.id })}`, { method: 'POST' }).catch(() => {});
     renderUploads();
   }
@@ -863,25 +883,56 @@
     $('uploads-bar-fill').style.width = `${total ? Math.round((loaded / total) * 100) : 100}%`;
     $('uploads-close').setAttribute('aria-label', active.length ? 'Cancel all uploads' : 'Clear finished uploads');
 
-    const list = $('uploads-list');
-    list.replaceChildren(...jobs.map((j) => {
-      const pct = j.total ? Math.min(100, Math.round((j.loaded / j.total) * 100)) : 100;
-      const meta = {
-        queued: 'Waiting…',
-        uploading: `${pct}% · ${formatSize(j.loaded)} of ${formatSize(j.total)}`,
-        done: `Uploaded · ${formatSize(j.total)}`,
-        error: j.error || 'Failed',
-        cancelled: 'Cancelled',
-      }[j.state];
-      const bar = h('div', { class: 'up-progress' }, h('div', {}));
-      bar.firstChild.style.width = `${pct}%`;
-      const busy = j.state === 'queued' || j.state === 'uploading';
-      return h('li', { class: `up-item ${j.state}`, data: { testid: 'upload-item', state: j.state, name: j.rel } },
-        h('span', { class: 'up-name', title: j.rel }, j.rel),
-        busy ? h('button', { class: 'icon-btn', 'aria-label': `Cancel ${j.rel}`, onclick: () => cancelJob(j) }, icon('x'))
-          : j.state === 'done' ? h('span', { class: 'icon-btn', style: 'color:var(--ok)' }, icon('check')) : h('span'),
-        h('span', { class: 'up-meta' }, meta), bar);
-    }));
+    // A folder can hold thousands of files: show what is happening now, not every row
+    const SHOW_WAITING = 4;
+    const SHOW_DONE = 4;
+    const waiting = jobs.filter((j) => j.state === 'queued');
+    const finished = jobs.filter((j) => j.state === 'done');
+    const keep = new Set([
+      ...jobs.filter((j) => j.state === 'uploading' || j.state === 'error'),
+      ...waiting.slice(0, SHOW_WAITING),
+      ...finished.slice(-SHOW_DONE),
+      ...(jobs.length <= 30 ? jobs : []),
+    ]);
+    const rows = jobs.filter((j) => keep.has(j)).map(uploadRow);
+    const hiddenWaiting = waiting.length - waiting.filter((j) => keep.has(j)).length;
+    const hiddenDone = finished.length - finished.filter((j) => keep.has(j)).length;
+    if (hiddenWaiting || hiddenDone) {
+      rows.push(h('li', { class: 'up-more', 'data-testid': 'upload-more' },
+        [hiddenDone ? `${plural(hiddenDone, 'file')} uploaded` : '', hiddenWaiting ? `${plural(hiddenWaiting, 'more file')} waiting` : ''].filter(Boolean).join(' · ')));
+    }
+    if (failed && !active.length) {
+      rows.push(h('li', { class: 'up-more' }, h('button', { class: 'btn', 'data-testid': 'retry-failed', onclick: retryFailed }, `Retry ${plural(failed, 'failed file')}`)));
+    }
+    $('uploads-list').replaceChildren(...rows);
+  }
+
+  function uploadRow(j) {
+    const pct = j.total ? Math.min(100, Math.round((j.loaded / j.total) * 100)) : 100;
+    const meta = {
+      queued: 'Waiting…',
+      uploading: `${pct}% · ${formatSize(j.loaded)} of ${formatSize(j.total)}`,
+      done: `Uploaded · ${formatSize(j.total)}`,
+      error: j.error || 'Failed',
+      cancelled: 'Cancelled',
+    }[j.state];
+    const bar = h('div', { class: 'up-progress' }, h('div', {}));
+    bar.firstChild.style.width = `${pct}%`;
+    const busy = j.state === 'queued' || j.state === 'uploading';
+    return h('li', { class: `up-item ${j.state}`, data: { testid: 'upload-item', state: j.state, name: j.rel } },
+      h('span', { class: 'up-name', title: j.rel }, j.rel),
+      busy ? h('button', { class: 'icon-btn', 'aria-label': `Cancel ${j.rel}`, onclick: () => cancelJob(j) }, icon('x'))
+        : j.state === 'done' ? h('span', { class: 'icon-btn', style: 'color:var(--ok)' }, icon('check')) : h('span'),
+      h('span', { class: 'up-meta' }, meta), bar);
+  }
+
+  function retryFailed() {
+    for (const j of jobs) {
+      if (j.state !== 'error') continue;
+      Object.assign(j, { id: uid(), state: 'queued', loaded: 0, error: '', cancelled: false });
+    }
+    pump();
+    renderUploads();
   }
   setInterval(() => { if (jobs.some((j) => j.state === 'uploading')) renderUploads(); }, 400);
 
@@ -902,6 +953,7 @@
       if (!batch.length) break;
       for (const child of batch) out.push(...await readEntry(child, `${prefix}${entry.name}/`));
     }
+    if (!out.length) out.push({ folder: `${prefix}${entry.name}` }); // an empty folder is kept too
     return out;
   }
 

@@ -22,7 +22,6 @@ const path = require('path');
 const os = require('os');
 const zlib = require('zlib');
 const crypto = require('crypto');
-const { once } = require('events');
 const { pipeline } = require('stream/promises');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -278,6 +277,11 @@ async function apiList(query) {
 async function apiMkdir(req) {
   const body = await readJson(req);
   const dir = resolvePath(body.path);
+  if (body.parents) { // "a/b/c": create the whole chain, fine if it already exists (used for empty folders in a folder upload)
+    const target = path.join(dir, ...cleanRelative(body.name));
+    await fsp.mkdir(target, { recursive: true });
+    return { ok: true, path: target };
+  }
   const target = path.join(dir, cleanName(body.name));
   await fsp.mkdir(target);
   return { ok: true, path: target };
@@ -363,11 +367,12 @@ const CRC_TABLE = new Uint32Array(256).map((_, n) => {
   return c >>> 0;
 });
 
-function crc32(buf, prev = 0) {
+function crcSlow(buf, prev = 0) {
   let c = (prev ^ 0xffffffff) >>> 0;
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
+const crc32 = zlib.crc32 || crcSlow; // Node 22+ has a much faster built-in
 
 function dosDateTime(ms) {
   const d = new Date(ms);
@@ -378,110 +383,224 @@ function dosDateTime(ms) {
   };
 }
 
-/** Walk the chosen files and folders into a flat list of ZIP entries. */
+// Files that are already compressed are stored as they are: faster, and no gain from deflating them.
+const STORE_EXT = new Set(`zip gz tgz bz2 xz 7z rar zst jpg jpeg png gif webp heic avif mp4 m4v mov mkv webm avi wmv mp3 m4a aac ogg opus flac docx xlsx pptx odt ods apk jar`.split(' '));
+// ZIP's classic limits are 4 GB per file / per archive offset and 65,535 entries. Past them, ZIP64 headers are used.
+// FM_TEST_ZIP64=1 shrinks the limits so the tests can cover ZIP64 without making multi-GB files.
+const TEST_ZIP64 = Boolean(process.env.FM_TEST_ZIP64);
+const ZIP64_AT = TEST_ZIP64 ? 1000 : 0xf0000000; // a file this big gets ZIP64 headers
+const Z32 = TEST_ZIP64 ? 3000 : 0xffffffff;
+const Z16 = TEST_ZIP64 ? 5 : 0xffff;
+
+/** Walk the chosen files and folders into a flat list of ZIP entries. Symlinked folders are skipped (they can loop). */
 async function collectZipItems(paths) {
   const items = [];
-  async function walk(abs, rel) {
+  let bytes = 0;
+  async function walk(abs, rel, top) {
+    const link = top ? null : await fsp.lstat(abs);
     const st = await fsp.stat(abs);
     if (st.isDirectory()) {
-      items.push({ abs, rel, dir: true, mtime: st.mtimeMs });
+      if (link && link.isSymbolicLink()) return;
+      items.push({ abs, rel, dir: true, mtime: st.mtimeMs, size: 0 });
       for (const child of await fsp.readdir(abs)) {
         if (PART_RE.test(child)) continue;
-        await walk(path.join(abs, child), `${rel}/${child}`).catch(() => {});
+        await walk(path.join(abs, child), `${rel}/${child}`, false).catch(() => {}); // unreadable items are skipped
       }
     } else if (st.isFile()) {
-      if (st.size >= 0xffffffff) throw new HttpError(413, `"${path.basename(abs)}" is larger than the 4 GB ZIP limit`);
-      items.push({ abs, rel, dir: false, mtime: st.mtimeMs });
+      items.push({ abs, rel, dir: false, mtime: st.mtimeMs, size: st.size });
+      bytes += st.size;
     }
   }
-  for (const p of paths) await walk(p, path.basename(p));
-  if (items.length >= 65535) throw new HttpError(413, 'Too many files for one ZIP');
-  return items;
+  for (const p of paths) await walk(p, path.basename(p), true);
+  return { items, bytes };
 }
+
+function zip64Extra(values) {
+  const b = Buffer.alloc(4 + values.length * 8);
+  b.writeUInt16LE(0x0001, 0);
+  b.writeUInt16LE(values.length * 8, 2);
+  values.forEach((v, i) => b.writeBigUInt64LE(BigInt(v), 4 + i * 8));
+  return b;
+}
+
+/** "Info-ZIP Unicode Path" extra field: lets unzip tools that ignore the UTF-8 flag still get the right name. */
+function unicodePathExtra(name) {
+  if (!name.some((c) => c > 0x7e)) return Buffer.alloc(0); // plain ASCII needs no help
+  const b = Buffer.alloc(4 + 5 + name.length);
+  b.writeUInt16LE(0x7075, 0);
+  b.writeUInt16LE(5 + name.length, 2);
+  b.writeUInt8(1, 4);
+  b.writeUInt32LE(crc32(name), 5);
+  name.copy(b, 9);
+  return b;
+}
+
+class ClientGone extends Error {}
 
 async function streamZip(res, items) {
   let offset = 0;
   const central = [];
-  const write = async (buf) => {
+
+  const write = (buf) => {
     offset += buf.length;
-    if (!res.write(buf)) await once(res, 'drain');
+    if (res.destroyed || res.writableEnded) throw new ClientGone('client left');
+    if (res.write(buf)) return null;
+    return new Promise((resolve, reject) => {
+      const done = () => { res.off('drain', ok); res.off('close', gone); };
+      const ok = () => { done(); resolve(); };
+      const gone = () => { done(); reject(new ClientGone('client left')); };
+      res.once('drain', ok);
+      res.once('close', gone);
+    });
   };
 
   for (const it of items) {
-    if (res.destroyed) return;
     const name = Buffer.from(it.rel + (it.dir ? '/' : ''), 'utf8');
+    const ext = extOf(it.rel);
+    const big = !it.dir && it.size >= ZIP64_AT;
+    const method = it.dir || STORE_EXT.has(ext) ? 0 : 8;
     const { time, date } = dosDateTime(it.mtime);
-    const flags = it.dir ? 0x0800 : 0x0808; // UTF-8 names, sizes follow the data
-    const method = it.dir ? 0 : 8;
+    const flags = it.dir ? 0x0800 : 0x0808; // UTF-8 names; for files the sizes follow the data
+    const uni = unicodePathExtra(name);
+    const localExtra = Buffer.concat([uni, big ? zip64Extra([0, 0]) : Buffer.alloc(0)]);
 
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(big ? 45 : 20, 4);
     local.writeUInt16LE(flags, 6);
     local.writeUInt16LE(method, 8);
     local.writeUInt16LE(time, 10);
     local.writeUInt16LE(date, 12);
+    if (big) { local.writeUInt32LE(0xffffffff, 18); local.writeUInt32LE(0xffffffff, 22); }
     local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(localExtra.length, 28);
     const localOffset = offset;
-    await write(local);
-    await write(name);
+    await write(Buffer.concat([local, name, localExtra]));
 
     let crc = 0;
     let usize = 0;
     let csize = 0;
     if (!it.dir) {
       const source = fs.createReadStream(it.abs);
-      const deflate = zlib.createDeflateRaw();
-      source.on('data', (c) => {
-        crc = crc32(c, crc);
-        usize += c.length;
-      });
-      source.on('error', (e) => deflate.destroy(e));
-      source.pipe(deflate);
-      for await (const c of deflate) {
-        csize += c.length;
-        await write(c);
+      const deflate = method === 8 ? zlib.createDeflateRaw() : null;
+      source.on('data', (c) => { crc = crc32(c, crc); usize += c.length; });
+      let out = source;
+      if (deflate) { source.on('error', (e) => deflate.destroy(e)); source.pipe(deflate); out = deflate; }
+      try {
+        for await (const c of out) {
+          csize += c.length;
+          await write(c);
+        }
+      } finally {
+        source.destroy();
+        deflate?.destroy();
       }
-      const desc = Buffer.alloc(16);
+      if (!big && (usize >= 0xffffffff || csize >= 0xffffffff)) throw new Error(`"${it.rel}" grew past 4 GB while it was being zipped`);
+      const desc = Buffer.alloc(big ? 24 : 16);
       desc.writeUInt32LE(0x08074b50, 0);
       desc.writeUInt32LE(crc, 4);
-      desc.writeUInt32LE(csize, 8);
-      desc.writeUInt32LE(usize, 12);
+      if (big) { desc.writeBigUInt64LE(BigInt(csize), 8); desc.writeBigUInt64LE(BigInt(usize), 16); }
+      else { desc.writeUInt32LE(csize, 8); desc.writeUInt32LE(usize, 12); }
       await write(desc);
     }
-    central.push({ name, flags, method, time, date, crc, csize, usize, localOffset, dir: it.dir });
+    central.push({ name, uni, flags, method, time, date, crc, csize, usize, localOffset, dir: it.dir, big });
   }
 
   const cdStart = offset;
   for (const c of central) {
+    const bigOffset = c.localOffset >= Z32;
+    const z = [];
+    if (c.big) z.push(c.usize, c.csize);
+    if (bigOffset) z.push(c.localOffset);
+    const extra = Buffer.concat([c.uni, z.length ? zip64Extra(z) : Buffer.alloc(0)]);
     const h = Buffer.alloc(46);
     h.writeUInt32LE(0x02014b50, 0);
-    h.writeUInt16LE(20, 4);
-    h.writeUInt16LE(20, 6);
+    h.writeUInt16LE(c.big || bigOffset ? 45 : 20, 4);
+    h.writeUInt16LE(c.big || bigOffset ? 45 : 20, 6);
     h.writeUInt16LE(c.flags, 8);
     h.writeUInt16LE(c.method, 10);
     h.writeUInt16LE(c.time, 12);
     h.writeUInt16LE(c.date, 14);
     h.writeUInt32LE(c.crc, 16);
-    h.writeUInt32LE(c.csize, 20);
-    h.writeUInt32LE(c.usize, 24);
+    h.writeUInt32LE(c.big ? 0xffffffff : c.csize, 20);
+    h.writeUInt32LE(c.big ? 0xffffffff : c.usize, 24);
     h.writeUInt16LE(c.name.length, 28);
+    h.writeUInt16LE(extra.length, 30);
     h.writeUInt32LE(c.dir ? 0x10 : 0, 38);
-    h.writeUInt32LE(c.localOffset, 42);
-    await write(h);
-    await write(c.name);
+    h.writeUInt32LE(bigOffset ? 0xffffffff : c.localOffset, 42);
+    await write(Buffer.concat([h, c.name, extra]));
   }
   const cdSize = offset - cdStart;
+  const count = central.length;
+  const needZip64 = count >= Z16 || cdStart >= Z32 || cdSize >= Z32;
+  if (needZip64) {
+    const eocd64 = Buffer.alloc(56);
+    eocd64.writeUInt32LE(0x06064b50, 0);
+    eocd64.writeBigUInt64LE(44n, 4);
+    eocd64.writeUInt16LE(45, 12);
+    eocd64.writeUInt16LE(45, 14);
+    eocd64.writeBigUInt64LE(BigInt(count), 24);
+    eocd64.writeBigUInt64LE(BigInt(count), 32);
+    eocd64.writeBigUInt64LE(BigInt(cdSize), 40);
+    eocd64.writeBigUInt64LE(BigInt(cdStart), 48);
+    const loc = Buffer.alloc(20);
+    loc.writeUInt32LE(0x07064b50, 0);
+    loc.writeBigUInt64LE(BigInt(offset), 8); // where the ZIP64 end record starts
+    loc.writeUInt32LE(1, 16);
+    await write(Buffer.concat([eocd64, loc]));
+  }
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(central.length, 8);
-  end.writeUInt16LE(central.length, 10);
-  end.writeUInt32LE(cdSize, 12);
-  end.writeUInt32LE(cdStart, 16);
+  end.writeUInt16LE(needZip64 ? 0xffff : count, 8);
+  end.writeUInt16LE(needZip64 ? 0xffff : count, 10);
+  end.writeUInt32LE(needZip64 ? 0xffffffff : cdSize, 12);
+  end.writeUInt32LE(needZip64 ? 0xffffffff : cdStart, 16);
   await write(end);
   res.end();
 }
 
+function zipNameFor(paths) {
+  return paths.length === 1 ? `${path.basename(paths[0])}.zip` : `files-${new Date().toISOString().slice(0, 10)}.zip`;
+}
+
+async function sendZip(res, plan) {
+  res.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Disposition': contentDisposition('attachment', plan.name),
+    'Cache-Control': 'no-store',
+  });
+  try {
+    await streamZip(res, plan.items);
+  } catch (err) {
+    if (!(err instanceof ClientGone)) console.error('ZIP failed:', err.message);
+    res.destroy(); // a cut-off download is better than a ZIP that looks complete but is not
+  }
+}
+
+// Step 1: the page asks for a ZIP of some paths. We check them here (so a problem shows as a message, not a broken download)
+// and hand back a one-time link.
+const zipPlans = new Map(); // token -> { items, name, expires }
+
+async function apiZipPlan(req) {
+  const body = await readJson(req);
+  const list = Array.isArray(body.paths) ? body.paths : [];
+  if (!list.length) throw new HttpError(400, 'Nothing selected');
+  const paths = list.map(resolvePath);
+  const { items, bytes } = await collectZipItems(paths);
+  if (!items.length) throw new HttpError(400, 'There are no files to download');
+  const token = crypto.randomBytes(16).toString('hex');
+  zipPlans.set(token, { items, name: zipNameFor(paths), expires: Date.now() + 2 * 60 * 1000 });
+  return { token, files: items.filter((i) => !i.dir).length, folders: items.filter((i) => i.dir).length, bytes };
+}
+
+async function apiZipGet(res, query) {
+  const plan = zipPlans.get(String(query.token || ''));
+  zipPlans.delete(String(query.token || ''));
+  if (!plan || plan.expires < Date.now()) throw new HttpError(410, 'This download link has expired. Please try again.');
+  await sendZip(res, plan);
+}
+
+// Older style: one POST that streams the ZIP straight back (used by simple clients and the tests)
 async function apiZip(req, res) {
   const type = req.headers['content-type'] || '';
   let list;
@@ -492,18 +611,8 @@ async function apiZip(req, res) {
   }
   if (!Array.isArray(list) || !list.length) throw new HttpError(400, 'Nothing selected');
   const paths = list.map(resolvePath);
-  const items = await collectZipItems(paths);
-  const zipName = paths.length === 1 ? `${path.basename(paths[0])}.zip` : `files-${new Date().toISOString().slice(0, 10)}.zip`;
-  res.writeHead(200, {
-    'Content-Type': 'application/zip',
-    'Content-Disposition': contentDisposition('attachment', zipName),
-    'Cache-Control': 'no-store',
-  });
-  try {
-    await streamZip(res, items);
-  } catch (err) {
-    res.destroy(err);
-  }
+  const { items } = await collectZipItems(paths);
+  await sendZip(res, { items, name: zipNameFor(paths) });
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +628,8 @@ function uploadTarget(query) {
   const final = path.join(dir, ...cleanRelative(query.name));
   const id = String(query.id || '').replace(/[^\w-]/g, '').slice(0, 40);
   if (id.length < 6) throw new HttpError(400, 'Missing upload id');
-  return { dir, final, id, part: `${final}.${id}.part` };
+  // the partial file's name does not depend on the real name, so very long names still work
+  return { dir, final, id, part: path.join(path.dirname(final), `.${id}.part`) };
 }
 
 // Uploads that were cancelled (so a late chunk cannot bring the file back) and
@@ -532,6 +642,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [id, t] of cancelledUploads) if (now - t > 60 * 60 * 1000) cancelledUploads.delete(id);
   for (const [token, expires] of sessions) if (expires < now) sessions.delete(token);
+  for (const [token, plan] of zipPlans) if (plan.expires < now) zipPlans.delete(token);
   for (const [part, t] of openParts) {
     if (now - t > PART_MAX_IDLE) {
       openParts.delete(part);
@@ -759,6 +870,8 @@ const server = http.createServer(async (req, res) => {
       case 'POST /api/delete': return sendJson(res, 200, await apiDelete(req));
       case 'GET /api/download': return await apiDownload(req, res, query);
       case 'POST /api/zip': return await apiZip(req, res);
+      case 'POST /api/zip-plan': return sendJson(res, 200, await apiZipPlan(req));
+      case 'GET /api/zip': return await apiZipGet(res, query);
       case 'POST /api/upload': return sendJson(res, 200, await apiUpload(req, res, query));
       case 'GET /api/upload-status': return sendJson(res, 200, await apiUploadStatus(query));
       case 'POST /api/upload-cancel': return sendJson(res, 200, await apiUploadCancel(query));
@@ -775,6 +888,9 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, status, { error: err instanceof HttpError ? err.message : 'Server error', ...(err.extra || {}) });
   }
 });
+
+server.requestTimeout = 0; // a big upload chunk on a slow link may take longer than the 5 min default
+server.headersTimeout = 60_000;
 
 function start(port = process.env.PORT === undefined ? 3999 : Number(process.env.PORT), host = process.env.HOST || '0.0.0.0') {
   return new Promise((resolve) => {

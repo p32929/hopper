@@ -1,5 +1,6 @@
 // Big-file check in a real browser: upload a big file, download it back, compare checksums.
 //   BIG_FILE=/path/to/big.bin npx playwright test tests/bigfile.spec.js            (upload, then download it back)
+//   BIG_FOLDER=/path/to/folder npx playwright test tests/bigfile.spec.js           (upload a whole folder, download it as a ZIP, compare every file)
 //   BIG_DOWNLOAD=/path/on/server BIG_DOWNLOAD_SHA=<sha256> ...                      (download a file that already lives on the server)
 //   BASE_URL=http://host:3999 BIG_PASSWORD=... to test a running server with a password.
 const { test, expect } = require('@playwright/test');
@@ -99,4 +100,66 @@ test('downloads a big file that already lives on the server', async ({ page }) =
   expect(fs.statSync(saved).size).toBe(size);
   expect(await sha256(saved)).toBe(process.env.BIG_DOWNLOAD_SHA);
   console.log(`DOWNLOAD ${mb(size)} MB in ${sec.toFixed(1)} s = ${(size / 1048576 / sec).toFixed(1)} MB/s, checksum matches the server's own sha256`);
+});
+
+// Every file under dir -> { "relative/path": sha256 } (folders count too, as "path/")
+async function tree(dir, rel = '') {
+  const out = {};
+  for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) { out[`${r}/`] = 'dir'; Object.assign(out, await tree(dir, r)); } else out[r] = await sha256(path.join(dir, r));
+  }
+  return out;
+}
+
+test('uploads a whole folder, then downloads it as a ZIP with every file intact', async ({ page }) => {
+  const BIG_FOLDER = process.env.BIG_FOLDER;
+  test.skip(!BIG_FOLDER, 'set BIG_FOLDER to a folder with many and large files');
+  const top = path.basename(BIG_FOLDER);
+  const wanted = await tree(BIG_FOLDER);
+  const files = Object.keys(wanted).filter((k) => !k.endsWith('/')).length;
+  const total = Object.keys(wanted).filter((k) => !k.endsWith('/')).reduce((n, k) => n + fs.statSync(path.join(BIG_FOLDER, k)).size, 0);
+
+  await signIn(page);
+  const info = await (await page.request.get('/api/info')).json();
+  const dir = (await (await page.request.post('/api/mkdir', { data: { path: info.home, name: `folder-test-${Date.now()}` } })).json()).path;
+  const out = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'hopper-unzip-'));
+  try {
+    await page.goto(`/#${encodeURI(dir)}`);
+    await expect(page.getByTestId('breadcrumb')).toContainText(path.basename(dir));
+
+    const t0 = Date.now();
+    await page.locator('#dir-input').setInputFiles(BIG_FOLDER);
+    await expect(page.locator('#uploads-title')).toContainText(/Uploaded \d+ files?$/, { timeout: 25 * 60 * 1000 });
+    expect(await page.locator('[data-testid=upload-item][data-state=error]').count(), 'no failed uploads').toBe(0);
+    console.log(`UPLOAD   folder with ${files} files, ${mb(total)} MB in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+    const row = page.locator(`[data-testid=row][data-name="${top}"]`);
+    await expect(row).toBeVisible();
+
+    // the server must hold exactly the same files (checked through the API: sizes)
+    const walk = async (p) => {
+      const l = (await (await page.request.get(`/api/list?path=${encodeURIComponent(p)}`)).json()).entries;
+      let n = 0;
+      for (const e of l) n += e.type === 'dir' ? await walk(p + info.sep + e.name) : 1;
+      return n;
+    };
+    expect(await walk(dir + info.sep + top), 'files on the server').toBe(files);
+
+    const t1 = Date.now();
+    await row.hover();
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 120_000 }), row.getByRole('button', { name: 'Download as ZIP' }).click()]);
+    const zipPath = await dl.path();
+    expect(await dl.failure()).toBeNull();
+    console.log(`DOWNLOAD zip ${mb(fs.statSync(zipPath).size)} MB in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+    expect(dl.suggestedFilename()).toBe(`${top}.zip`);
+
+    // unpack with Python's zipfile (it checks every CRC and reads ZIP64; macOS's own unzip cannot do non-ASCII names), then compare checksums
+    require('node:child_process').execFileSync('python3', ['-c', 'import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);z.extractall(sys.argv[2])', zipPath, out], { maxBuffer: 1 << 28 });
+    const got = await tree(path.join(out, top));
+    expect(Object.keys(got).length, 'same number of entries').toBe(Object.keys(wanted).length);
+    for (const [k, v] of Object.entries(wanted)) expect(got[k], k).toBe(v);
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    await page.request.post('/api/delete', { data: { paths: [dir] } });
+  }
 });

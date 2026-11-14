@@ -230,6 +230,8 @@ button { cursor: pointer; }
 .up-item.error .up-meta { color: var(--danger); }
 .up-progress { grid-column: 1 / -1; height: 4px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .up-progress > div { height: 100%; width: 0; background: var(--accent); border-radius: 4px; }
+.up-more { padding: 6px 16px 10px; font-size: 12px; color: var(--muted); }
+.up-more .btn { height: 32px; }
 .up-item.done .up-progress, .up-item.error .up-progress, .up-item.cancelled .up-progress { display: none; }
 
 /* ---------- drop zone, toasts, dialogs ---------- */

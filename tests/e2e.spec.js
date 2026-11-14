@@ -277,6 +277,56 @@ test('selects several items and downloads them as one valid ZIP', async ({ page,
   expect(zip['one.txt'].toString()).toBe('first');
 });
 
+test('a folder downloads as a ZIP with its structure; a vanished folder gives a message, not a broken page', async ({ page, request }) => {
+  await post(request, '/api/mkdir', { path: sandbox, name: 'album' });
+  await post(request, '/api/mkdir', { path: sandbox + sep + 'album', name: 'inner' });
+  await seed(request, sandbox + sep + 'album', 'a.txt', 'first');
+  await seed(request, sandbox + sep + 'album' + sep + 'inner', 'b.txt', 'second');
+  await post(request, '/api/mkdir', { path: sandbox, name: 'gone' });
+  await open(page);
+  await row(page, 'album').hover();
+  const [dl] = await Promise.all([page.waitForEvent('download'), row(page, 'album').getByRole('button', { name: 'Download as ZIP' }).click()]);
+  expect(dl.suggestedFilename()).toBe('album.zip');
+  const zip = readZip(fs.readFileSync(await dl.path()));
+  expect(Object.keys(zip).sort()).toEqual(['album/', 'album/a.txt', 'album/inner/', 'album/inner/b.txt']);
+  expect(zip['album/inner/b.txt'].toString()).toBe('second');
+
+  await post(request, '/api/delete', { paths: [sandbox + sep + 'gone'] }); // removed behind the page's back
+  await row(page, 'gone').hover();
+  await row(page, 'gone').getByRole('button', { name: 'Download as ZIP' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Cannot make the ZIP' })).toBeVisible();
+  await expect(row(page, 'album')).toBeVisible(); // the page is still the app
+});
+
+test('uploading a folder with many files keeps the panel short and uploads everything', async ({ page, request }) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-many-'));
+  for (let d = 0; d < 4; d++) {
+    fs.mkdirSync(path.join(dir, 'lots', `part ${d}`, 'deep'), { recursive: true });
+    for (let f = 0; f < 15; f++) fs.writeFileSync(path.join(dir, 'lots', `part ${d}`, 'deep', `f${f}.txt`), `file ${d}/${f}`);
+  }
+  await open(page);
+  await page.locator('#dir-input').setInputFiles(path.join(dir, 'lots'));
+  await expect(page.locator('#uploads-title')).toHaveText('Uploaded 60 files', { timeout: 30_000 });
+  expect(await page.locator('[data-testid=upload-item]').count(), 'only a few rows are drawn').toBeLessThanOrEqual(8);
+  await expect(page.getByTestId('upload-more')).toContainText('files uploaded');
+  const walk = async (p) => { let n = 0; for (const e of await readDir(request, p)) n += e.type === 'dir' ? await walk(p + sep + e.name) : 1; return n; };
+  expect(await walk(sandbox + sep + 'lots')).toBe(60);
+  expect((await download(request, [sandbox, 'lots', 'part 3', 'deep', 'f14.txt'].join(sep))).toString()).toBe('file 3/14');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('failed uploads can be retried', async ({ page, request }) => {
+  let fail = true;
+  await page.route('**/api/upload?*', (route) => (fail ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"disk exploded"}' }) : route.continue()));
+  await open(page);
+  await page.locator('#file-input').setInputFiles({ name: 'retry-me.txt', mimeType: 'text/plain', buffer: Buffer.from('finally') });
+  await expect(page.locator('[data-testid=upload-item]')).toHaveAttribute('data-state', 'error', { timeout: 20_000 });
+  fail = false;
+  await page.getByTestId('retry-failed').click();
+  await expect(page.locator('[data-testid=upload-item]')).toHaveAttribute('data-state', 'done');
+  expect((await download(request, sandbox + sep + 'retry-me.txt')).toString()).toBe('finally');
+});
+
 test('shift-click selects a range; Escape clears', async ({ page, request }) => {
   for (const n of ['a', 'b', 'c', 'd']) await seed(request, sandbox, `${n}.txt`, n);
   await open(page);
