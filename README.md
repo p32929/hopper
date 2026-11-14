@@ -1,43 +1,76 @@
-# File Manager Server
+# Hopper
 
-[WIP] A lightweight, self-hosted file manager with **zero external dependencies**. Clone it, run it with Node.js, and you have a browser file explorer for uploading and downloading files on that machine — no npm install, no FTP, no SSH.
-
-https://github.com/user-attachments/assets/813328ac-4639-4804-a269-c67a0fa2bea6
+A clean, self-hosted web file manager with **zero dependencies**. Clone it, run it with Node.js, and you can browse, upload, download and organise files on that machine from any browser, on your computer or your phone.
 
 ## Features
 
-- **Built-in file explorer** — browse directories, grid or list view
-- **Upload to any directory** with chunked transfers, so large files survive a flaky connection
-- **Real-time progress** — speed, estimated time remaining, and a cancel button
-- **Download one file, or several as a ZIP**
-- **File type icons** so you can see what's what at a glance
-- **Zero dependencies** — just Node.js and `server.js`
+- **Fast, tidy interface**: list or grid view, sorting, filter box, breadcrumbs you can type into, light and dark theme
+- **Upload** files or whole folders by button or drag and drop. Big files go up in chunks and **resume** after a network hiccup. Live progress, speed, time left and cancel
+- **Download** a file, or select several files and folders and get them as **one ZIP** (built in pure Node, nothing to install)
+- **Create folders, rename and delete** (with a confirmation)
+- **Preview in the browser** instead of downloading: images, video, audio, PDF, and any text or code file (`.js`, `.py`, `.json`, `Dockerfile`, logs and more) with syntax colours, line numbers and next/previous with the arrow keys
+- **Keyboard shortcuts**: `/` filter, `Ctrl/Cmd+A` select all, `F2` rename, `Delete` delete, `Alt+↑` parent folder, `Ctrl/Cmd+L` type a path
+- Works well on **phones and tablets**
+- Never overwrites: uploading `photo.jpg` twice gives `photo (1).jpg`
 
 ## How to run it
 
 ```bash
-git clone https://github.com/p32929/node_file_manager_server.git
-cd node_file_manager_server
+git clone https://github.com/p32929/hopper.git
+cd hopper
 node server.js
 ```
 
-Then open `http://<server-ip>:3999` in a browser and start browsing.
+Then open `http://<server-ip>:3999`. Press `Ctrl+C` to stop it. Needs Node.js 18 or newer.
 
-Press `Ctrl+C` in the terminal to stop it.
+| Setting | What it does | Default |
+| --- | --- | --- |
+| `PORT` | Port to listen on | `3999` |
+| `HOST` | Address to listen on (`127.0.0.1` = this machine only) | `0.0.0.0` |
+| `FM_ROOT` | Lock the manager to one folder (it cannot go above it) | the whole machine |
+| `FM_PASSWORD` (or `--password=...`) | Ask for this password before showing anything | no password |
+| `FM_TRUST_PROXY` | Set to `1` behind a reverse proxy so the visitor's real address is used | off |
+
+```bash
+PORT=8080 FM_ROOT=/srv/share node server.js
+```
+
+## Password
+
+```bash
+FM_PASSWORD='something long' node server.js
+# or
+node server.js --password='something long'
+```
+
+Everyone then sees a sign-in page first, and nothing else (not even the app files) until the password is right. Sessions last 7 days, and there is a **Sign out** button.
+
+**Wrong passwords are limited to 5.** On the 5th mistake the visitor's **IP address and browser** are both blocked for 7 days, and a blocked visitor gets nothing, not even with the correct password. The block list is kept in memory, so **restarting the server lifts every block**. Mistakes are counted per visitor, and a correct password resets that visitor's count.
+
+Tips: use a long password, and put HTTPS in front of it (a reverse proxy such as Caddy or nginx) if you reach it over the internet, because the password is sent as typed. Behind a proxy set `FM_TRUST_PROXY=1` so blocking uses each visitor's real address.
+
+## Tests
+
+```bash
+npm test            # API and password tests (no install needed)
+npm install         # once, for the browser tests
+npm run test:e2e    # real-browser tests (uses your installed Chrome)
+```
+
+Both can also run against a server that is already running: `BASE_URL=http://host:3999 npm run test:e2e`.
 
 ## When to use it
 
-- You need a fast file transfer without setting up FTP or SSH
-- You want a temporary transfer tool between two machines
+- You need a quick file transfer without setting up FTP, SFTP or SSH
+- You want a simple way to look after files on a home server, Raspberry Pi or VM
 - You want full control over exactly where files land
 
 ## When NOT to use it
 
-- **If security matters** — there is **no authentication** by default. Anyone who can reach the port can read and write files.
-- For long-term deployment — this is meant to be started, used, and stopped
-- If you need multiple users or permissions
+- **If security matters and you have not set a password.** Without `FM_PASSWORD` there is **no login**: anyone who can reach the port can read, upload, rename and delete files. Set a password, use it on a trusted network, or bind it with `HOST=127.0.0.1`.
+- Multi-user setups with permissions
 
-> Only run it while you need it, and never expose it to the public internet without putting auth in front of it.
+> Never expose it to the public internet without a password and HTTPS.
 
 ## License
 

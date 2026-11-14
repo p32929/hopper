@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Hopper · Sign in</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/theme.js"></script>
+  <script src="/login.js" defer></script>
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <span class="brand-logo big"><svg class="ic" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></span>
+    <h1>Hopper</h1>
+    <p class="muted">Enter the password to continue.</p>
+    <form id="login-form" novalidate>
+      <input id="password" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" autofocus required>
+      <button class="btn primary wide" id="login-btn" type="submit">Unlock</button>
+      <div id="login-msg" class="login-msg" role="alert"></div>
+    </form>
+  </main>
+</body>
+</html>
