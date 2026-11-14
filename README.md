@@ -2,6 +2,19 @@
 
 A clean, self-hosted web file manager with **zero dependencies**. Clone it, run it with Node.js, and you can browse, upload, download and organise files on that machine from any browser, on your computer or your phone.
 
+![Hopper file list in dark mode](docs/screenshots/desktop.png)
+
+<p align="center">
+  <img src="docs/screenshots/photos-grid.png" width="49%" alt="Photos in grid view with thumbnails">
+  <img src="docs/screenshots/code-viewer.png" width="49%" alt="Code file opened in the viewer with colours and line numbers">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/phone.png" height="420" alt="Hopper on a phone">
+  <img src="docs/screenshots/phone-grid.png" height="420" alt="Grid view on a phone">
+  <img src="docs/screenshots/tablet.png" height="420" alt="Hopper on a tablet">
+</p>
+
 ## Features
 
 - **Fast, tidy interface**: list or grid view, sorting, filter box, breadcrumbs you can type into, light and dark theme
