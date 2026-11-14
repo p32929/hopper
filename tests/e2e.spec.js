@@ -456,7 +456,20 @@ test.describe('on a phone', () => {
     expect(await noSidewaysScroll(page)).toBe(true);
   });
 
-  test('theme and hidden files can be changed from the menu', async ({ page, request }) => {
+  test('grid thumbnails stay inside their tile', async ({ page, request }) => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  await request.post(`/api/upload?${new URLSearchParams({ path: sandbox, name: 'dot.png', id: 'gridseed1', offset: 0, total: png.length })}`, { data: png, headers: { 'Content-Type': 'application/octet-stream' } });
+  await page.addInitScript(() => localStorage.setItem('fm.view', '"grid"'));
+  await open(page);
+  const tile = row(page, 'dot.png').locator('.tile');
+  await expect.poll(() => row(page, 'dot.png').locator('img').evaluate((i) => i.complete)).toBe(true);
+  const t = await tile.boundingBox();
+  const i = await row(page, 'dot.png').locator('img').boundingBox();
+  expect(i.height).toBeLessThanOrEqual(t.height + 0.5);
+  expect(i.width).toBeLessThanOrEqual(t.width + 0.5);
+});
+
+test('theme and hidden files can be changed from the menu', async ({ page, request }) => {
     await seed(request, sandbox, '.hidden-note', 'x');
     await open(page);
     await expect(rows(page)).toHaveCount(0);
