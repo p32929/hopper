@@ -19,14 +19,14 @@ A clean, self-hosted web file manager with **zero dependencies**. Clone it, run 
 
 ## Features
 
-- **Fast, tidy interface**: list or grid view, sorting, filter box, breadcrumbs you can type into, light and dark theme
-- **Upload** files or whole folders by button or drag and drop. Big files go up in chunks and **resume** after a network hiccup. Live progress, speed, time left and cancel
-- **Download** a file, or select several files and folders (or a whole folder) and get them as **one ZIP**, built in pure Node with nothing to install. Works past 4 GB per file and 65,535 files (ZIP64), and already-compressed files such as videos and photos are not recompressed, so it is fast
-- **Create folders, rename and delete** (with a confirmation)
-- **Preview in the browser** instead of downloading: images, video, audio, PDF, and any text or code file (`.js`, `.py`, `.json`, `Dockerfile`, logs and more) with syntax colours, line numbers and next/previous with the arrow keys
-- **Keyboard shortcuts**: `/` filter, `Ctrl/Cmd+A` select all, `F2` rename, `Delete` delete, `Alt+↑` parent folder, `Ctrl/Cmd+L` type a path
-- Works well on **phones and tablets**
-- Never overwrites: uploading `photo.jpg` twice gives `photo (1).jpg`
+1. **A fast, tidy interface:** list or grid view, sorting, a filter box, breadcrumbs you can type into, and light and dark themes.
+2. **Upload** files or whole folders with a button or by drag and drop. Big files go up in pieces and **pick up where they stopped** after a network hiccup. You see progress, speed and time left, and you can cancel.
+3. **Download** one file, or pick several files and folders (or a whole folder) and get them as **one ZIP**. The ZIP is made by Hopper itself, works for files over 4 GB and folders with more than 65,535 files, and skips re-compressing videos and photos, so it is quick.
+4. **Create folders, rename and delete** (deleting asks first).
+5. **Preview in the browser** instead of downloading: images, video, audio, PDF, and any text or code file (`.js`, `.py`, `.json`, `Dockerfile`, logs and more) with colours, line numbers, and the arrow keys to move to the next or previous file.
+6. **Keyboard shortcuts:** `/` filter, `Ctrl/Cmd+A` select all, `F2` rename, `Delete` delete, `Alt+↑` parent folder, `Ctrl/Cmd+L` type a path.
+7. Works well on **phones and tablets**.
+8. **Never overwrites:** uploading `photo.jpg` twice gives you `photo (1).jpg`.
 
 ## How to run it
 
@@ -76,14 +76,14 @@ Both can also run against a server that is already running: `BASE_URL=http://hos
 
 ## When to use it
 
-- You need a quick file transfer without setting up FTP, SFTP or SSH
-- You want a simple way to look after files on a home server, Raspberry Pi or VM
-- You want full control over exactly where files land
+1. You need a quick file transfer without setting up FTP, SFTP or SSH.
+2. You want a simple way to look after files on a home server, Raspberry Pi or VM.
+3. You want full control over exactly where files land.
 
 ## When NOT to use it
 
-- **If security matters and you have not set a password.** Without `FM_PASSWORD` there is **no login**: anyone who can reach the port can read, upload, rename and delete files. Set a password, use it on a trusted network, or bind it with `HOST=127.0.0.1`.
-- Multi-user setups with permissions
+1. **Without a password, when security matters.** Without `FM_PASSWORD` there is **no login**: anyone who can reach the port can read, upload, rename and delete files. Set a password, use it on a trusted network, or bind it with `HOST=127.0.0.1`.
+2. When you need several users with their own permissions.
 
 > Never expose it to the public internet without a password and HTTPS.
 
@@ -93,43 +93,12 @@ MIT License — Copyright (c) Fayaz Bin Salam. See [LICENSE](LICENSE) for the fu
 
 ## Contributing
 
-Contributions are warmly welcomed and greatly appreciated! Whether it's a bug fix, new feature, or improvement, your input helps make this project better for everyone.
-
-Before submitting a pull request, please:
-
-1. Create an issue describing the feature or bug fix you'd like to work on
-2. Wait for discussion and approval to ensure alignment with project goals
-3. Fork the repository and create your feature branch
-4. Submit your pull request with a clear description of changes
-
-This approach helps avoid duplicate efforts and ensures smooth collaboration. Thank you for considering contributing!
+Contributions are very welcome, thank you! Before you start on a pull request, please open an issue and tell me what you would like to add or change. That way we can agree on it first, and your time is not wasted on something that might not fit. Thanks for helping make Hopper better.
 
 ## Share
 
-Sharing this repository with your friends is just one click away from here
+<a href="https://p32929.github.io/share/?repo=hopper"><img src="https://p32929.github.io/readme/share.svg" alt="Share this with your friends in just a click" width="420"></a>
 
-[![facebook](https://user-images.githubusercontent.com/6418354/179013321-ac1d1452-0689-493f-9066-940cf2302b6e.png)](https://www.facebook.com/sharer/sharer.php?u=https://github.com/p32929/node_file_manager_server/)
-[![twitter](https://user-images.githubusercontent.com/6418354/179013351-7d8d6d1c-4ce2-46ab-bef8-4c4765a1b888.png)](https://twitter.com/intent/tweet?url=https://github.com/p32929/node_file_manager_server/)
-[![tumblr](https://user-images.githubusercontent.com/6418354/179013343-3111f55a-3b90-40c7-8487-9777348672b0.png)](https://www.tumblr.com/share?v=3&u=https://github.com/p32929/node_file_manager_server/)
-[![pocket](https://user-images.githubusercontent.com/6418354/179013334-b095c45f-becf-49f4-9ee1-5a731a9b1f85.png)](https://getpocket.com/save?url=https://github.com/p32929/node_file_manager_server/)
-[![pinterest](https://user-images.githubusercontent.com/6418354/179013331-44cd9206-11b1-4b65-becb-5863b61c828f.png)](https://pinterest.com/pin/create/button/?url=https://github.com/p32929/node_file_manager_server/)
-[![reddit](https://user-images.githubusercontent.com/6418354/179013338-7416ae3f-73ba-4522-86e1-1374d7082d22.png)](https://www.reddit.com/submit?url=https://github.com/p32929/node_file_manager_server/)
-[![linkedin](https://user-images.githubusercontent.com/6418354/179013327-ca7b7102-1da8-4b1c-858f-1a6e5f21bd70.png)](https://www.linkedin.com/shareArticle?mini=true&url=https://github.com/p32929/node_file_manager_server/)
-[![whatsapp](https://user-images.githubusercontent.com/6418354/179013353-f477fa0b-3e6f-4138-a357-c9991b23ff88.png)](https://api.whatsapp.com/send?text=https://github.com/p32929/node_file_manager_server/)
+## Support
 
-<!-- hire-block -->
-
----
-
-## 💼 Using this at a company?
-
-I do fixed-price delivery work on my own projects. One invoice, one date, no hourly billing:
-
-| | |
-|---|---|
-| **White-label build** — this project rebranded, extended and deployed as yours | **$6,500** · 3 weeks |
-| **Custom app from scratch** on my own stack, signed and auto-updating | **$12,500** · 6 weeks |
-| **Production-hardening sprint** — 72 hours on this project, for your load and your security review | **$999** |
-| **Ongoing capacity** — one project-week of my time reserved every month | **$9,000 / month** |
-
-Full details → **[p32929.github.io/hire](https://p32929.github.io/hire/)** · Email **[fayazdevinbox@uberip.com](mailto:fayazdevinbox@uberip.com)** — scoping and quotes are free and I answer within one business day.
+<a href="https://p32929.github.io/support/"><img src="https://p32929.github.io/readme/support.svg" alt="If you like my works and want to support me, feel free to support" width="420"></a>
