@@ -2,6 +2,8 @@
 
 A clean, self-hosted web file manager with **zero dependencies**. Clone it, run it with Node.js, and you can browse, upload, download and organise files on that machine from any browser, on your computer or your phone.
 
+**No third-party packages, so there is no supply chain to attack.** Other self-hosted file managers pull in dozens or hundreds of npm packages, and one hijacked package is enough to read every file on your server. Hopper uses only Node.js itself: nothing to `npm install` to run it, no `node_modules`, no CDN scripts. All the code that touches your files is in this repo.
+
 ![Hopper file list in dark mode](docs/screenshots/desktop.png)
 
 <p align="center">
